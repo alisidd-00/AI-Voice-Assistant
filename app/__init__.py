@@ -11,8 +11,7 @@ def create_app():
         static_url_path="/static"
     )
     app.config.from_pyfile("config.py")
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///voice_assistants.db"
-    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
 
     db.init_app(app)
 
