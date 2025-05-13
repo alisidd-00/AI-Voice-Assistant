@@ -1,0 +1,104 @@
+import os
+import json
+from datetime import datetime, timedelta
+from app.models import Booking
+from app import db
+from datetime import datetime, date, time, timedelta
+
+
+def load_booked_slots(assistant_id: int, date: datetime.date):
+    """Return a dict of slot-strings → Booking rows for that assistant & date."""
+    rows = Booking.query.filter_by(assistant_id=assistant_id, date=date).all()
+    return { row.time.strftime("%I:%M %p").lstrip("0"): row for row in rows }
+
+def handle_booking(assistant_id: int, date: datetime.date, time: datetime.time,
+                   customer_name: str, details: str):
+    """Persist a new booking."""
+    booking = Booking(
+        assistant_id=assistant_id, date=date, time=time,
+        customer_name=customer_name, details=details
+    )
+    db.session.add(booking)
+    db.session.commit()
+
+
+def generate_time_slots(
+    start_time_24: str,
+    end_time_24: str,
+    duration_minutes: int,
+    available_days: dict[str, bool] | None = None,
+    for_date: date | None = None
+) -> list[str]:
+    """
+    Returns a list of pretty-printed slots (e.g. "9:00 AM") between start_time and end_time
+    on the given for_date, respecting the available_days map.
+    - start_time_24 / end_time_24: "HH:MM" strings in 24h.
+    - duration_minutes: length of each slot.
+    - available_days: {"monday": True, ..., "sunday": False}. If None, defaults to Mon–Fri.
+    - for_date: which calendar date to generate for; defaults to today.
+    """
+
+    # 1) Determine target_date
+    target_date = for_date or datetime.now().date()
+
+    # 2) Default available_days to Mon–Fri if not provided
+    if available_days is None:
+        available_days = {
+            "monday":   True,
+            "tuesday":  True,
+            "wednesday":True,
+            "thursday": True,
+            "friday":   True,
+            "saturday": False,
+            "sunday":   False
+        }
+
+    # 3) If business is closed that weekday, return no slots
+    weekday = target_date.strftime("%A").lower()
+    if not available_days.get(weekday, False):
+        return []
+
+    # 4) Parse the start/end times into datetime objects on target_date
+    sh, sm = map(int, start_time_24.split(":"))
+    eh, em = map(int, end_time_24.split(":"))
+    current = datetime.combine(target_date, time(sh, sm))
+    cutoff  = datetime.combine(target_date, time(eh, em))
+
+    # 5) Build the list of slots
+    slots: list[str] = []
+    while current < cutoff:
+        pretty = current.strftime("%I:%M %p").lstrip("0")
+        slots.append(pretty)
+        current += timedelta(minutes=duration_minutes)
+
+    return slots
+
+
+    raw_time = booking_data["booking_confirmed"]["time"].strip()
+    details = booking_data["booking_confirmed"].get("details", "")
+    booking_date = booking_data["booking_confirmed"].get("date")
+
+    dt = None
+    try:
+        dt = datetime.strptime(raw_time, "%I:%M %p")
+    except ValueError:
+        dt = datetime.strptime(raw_time, "%H:%M")
+
+    slot_12h = dt.strftime("%I:%M %p").lstrip("0")
+    slots = load_booked_slots(user_id)
+    
+    # Create a unique slot key if we have a date
+    slot_key = slot_12h
+    if booking_date:
+        slot_key = f"{booking_date}_{slot_12h}"
+
+    if slot_key in slots and slots[slot_key] is None:
+        slots[slot_key] = {
+            "name": user_name or "Unknown",
+            "details": details,
+            "date": booking_date,
+            "booked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        handle_booking (slots, user_id)
+        return True
+    return False

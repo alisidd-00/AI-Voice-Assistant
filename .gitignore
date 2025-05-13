@@ -1,0 +1,11 @@
+.env
+env
+app/__pycache__
+app/routes/__pycache__
+app/services/__pycache__
+static
+instance
+user_info.json
+slots_joshua.json
+test.py
+memory_1.json
