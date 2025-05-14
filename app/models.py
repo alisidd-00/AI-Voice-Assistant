@@ -4,7 +4,6 @@ from datetime import datetime
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    phone_number = db.Column(db.String(20), unique=True, nullable=True)
     name = db.Column(db.String(80))
     email = db.Column(db.String(120), unique=True, nullable=True)
     google_id = db.Column(db.String(120), unique=True, nullable=True)

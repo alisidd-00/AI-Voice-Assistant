@@ -14,3 +14,5 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:5000/api/auth/google/callback")
 
 OPENAI_API_KEY = os.getenv("OPENAI_KEY")
+SECRET_KEY = os.getenv("SECRET_KEY") 
+

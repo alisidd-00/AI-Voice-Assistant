@@ -13,6 +13,9 @@ assistant_bp = Blueprint("assistant", __name__)  # ✅ Define this first
 @assistant_bp.route("/register", methods=["POST"])
 def register_business():
     data = request.json
+    if "user_id" not in data:
+        return {"error": "Must include your user_id"}, 400
+    
     required = [
         "business_name",
         "receptionist_name",
@@ -23,17 +26,14 @@ def register_business():
         "available_days",
          "voice_type"  
     ]
+
     if not all(field in data for field in required):
         return {"error": "Missing required fields"}, 400
-
-    # Create or fetch user
-    phone = data["phone_number"]
-    user = User.query.filter_by(phone_number=phone).first()
+    
+    user = User.query.get(data["user_id"])
     if not user:
-        user = User(phone_number=phone, name=data["receptionist_name"])
-        db.session.add(user)
-        db.session.commit()
-
+        return {"error": "No such user"}, 404
+    
     # Use existing Twilio number if provided, otherwise buy a new one
     twilio_number = data.get("twilio_number")
     if not twilio_number:
