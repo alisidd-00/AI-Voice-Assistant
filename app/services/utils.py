@@ -16,7 +16,6 @@ def generate_prompt(history_json: str, assistant=None) -> str:
         return "You are an AI assistant. How can I help?"
 
     available_days = json.loads(assistant.available_days)
-    print(f"Available days: {available_days}")
     
     today = datetime.now().date()
     all_slots = generate_time_slots(
@@ -27,14 +26,11 @@ def generate_prompt(history_json: str, assistant=None) -> str:
         for_date=today
     )
 
-    print(f"All slots: {all_slots}")
 
    # 3) Load today's bookings, separate into booked and available lists
     booked_rows    = load_booked_slots(assistant.id, today)
     booked_slots   = [slot for slot in all_slots if slot in booked_rows]
     available_slots = [slot for slot in all_slots if slot not in booked_rows]
-    print(f"Booked slots: {booked_slots}")
-    print(f"Available slots: {available_slots}")
     # 4) Convert business hours to 12-hour format
     start_dt = datetime.strptime(assistant.start_time, "%H:%M")
     end_dt   = datetime.strptime(assistant.end_time,   "%H:%M")

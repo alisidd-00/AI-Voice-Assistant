@@ -4,7 +4,6 @@ from twilio.rest import Client
 account_sid = os.getenv("TWILIO_ACCOUNT_SID")
 auth_token = os.getenv("TWILIO_AUTH_TOKEN")
 webhook_base = os.getenv("TWILIO_WEBHOOK_BASE")  # e.g., https://yourdomain.com/voice
-print('webhook_base', webhook_base)
 client = Client(account_sid, auth_token)
 
 def buy_twilio_number(country="US"):

@@ -17,10 +17,8 @@ def process_input(user_text: str, assistant: Assistant, conversation_id: int):
     history = load_memory(conversation_id)
 
     history_json = json.dumps(history, ensure_ascii=False)
-    print(f"History: {history_json}")
 
     prompt      = generate_prompt(history_json, assistant)
-    print(f"Prompt: {prompt}")
 
     messages = [
         {"role": "system", "content": prompt},

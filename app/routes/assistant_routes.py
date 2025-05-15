@@ -1,21 +1,43 @@
-from flask import request
-from app.services.booking import generate_time_slots, load_booked_slots
-# from app.services.memory import update_user_info
-import os
-import json
+# app/routes/assistant_routes.py
+
 from flask import Blueprint, request, jsonify
-from app.models import db, User, Assistant, Booking
-from app.services.twillio_helper import buy_twilio_number
+from werkzeug.utils import secure_filename
+import json
 from datetime import datetime, timedelta
 
-assistant_bp = Blueprint("assistant", __name__)  # ✅ Define this first
+from app.models import db, User, Assistant, Booking
+from app.services.twillio_helper import buy_twilio_number
+from app.services.rag import extract_and_index
+from app.services.booking import generate_time_slots, load_booked_slots
+from flask import session
+
+assistant_bp = Blueprint("assistant", __name__)
 
 @assistant_bp.route("/register", methods=["POST"])
 def register_business():
-    data = request.json
-    if "user_id" not in data:
-        return {"error": "Must include your user_id"}, 400
-    
+    """
+    Accepts multipart/form-data with form fields:
+      - user_id (int)
+      - business_name
+      - receptionist_name
+      - start_time (HH:MM)
+      - end_time   (HH:MM)
+      - booking_duration_minutes (int)
+      - phone_number
+      - available_days (JSON object)
+      - voice_type ("male"|"female")
+    Optionally:
+      - files (one or more PDFs or text files) to index into RAG immediately.
+    """
+    print("🔍 Request:", request)
+    # 1) Parse and validate core form fields
+    form = request.form
+    print("🔍 Form:", form)
+    try:
+        user_id = int(form["user_id"])
+    except (KeyError, ValueError):
+        return jsonify(error="Must include a valid user_id"), 400
+
     required = [
         "business_name",
         "receptionist_name",
@@ -24,220 +46,272 @@ def register_business():
         "booking_duration_minutes",
         "phone_number",
         "available_days",
-         "voice_type"  
+        "voice_type"
     ]
+    if not all(field in form for field in required):
+        return jsonify(error="Missing one or more required fields"), 400
 
-    if not all(field in data for field in required):
-        return {"error": "Missing required fields"}, 400
-    
-    user = User.query.get(data["user_id"])
+    user = User.query.get(user_id)
+    print("🔍 User:", user)
     if not user:
-        return {"error": "No such user"}, 404
+        return jsonify(error="No such user"), 404
     
-    # Use existing Twilio number if provided, otherwise buy a new one
-    twilio_number = data.get("twilio_number")
+    country = form.get("country", "US").upper()
+    # 2) Acquire or purchase Twilio number
+    twilio_number = form.get("twilio_number")
     if not twilio_number:
         try:
-            print('1')
-            # twilio_number = buy_twilio_number()
+            twilio_number = buy_twilio_number(country)
         except Exception as e:
-            return {"error": "Twilio error", "details": str(e)}, 500
+            return jsonify(error="Twilio error", details=str(e)), 500
 
-    # Create assistant
+    # 3) Create the Assistant record
     assistant = Assistant(
-        name=data["receptionist_name"],
-        business_name=data["business_name"],
-        description=data.get("business_description", ""),
-        start_time=data["start_time"],
-        end_time=data["end_time"],
-        booking_duration_minutes=data["booking_duration_minutes"],
-        available_days=json.dumps(data["available_days"]),
+        name=form["receptionist_name"],
+        business_name=form["business_name"],
+        description=form.get("business_description", ""),
+        start_time=form["start_time"],
+        end_time=form["end_time"],
+        booking_duration_minutes=int(form["booking_duration_minutes"]),
+        available_days=json.dumps(json.loads(form["available_days"])),
         twilio_number=twilio_number,
-        voice_type=data["voice_type"], 
+        voice_type=form["voice_type"],
         user_id=user.id
     )
     db.session.add(assistant)
     db.session.commit()
 
-    return {
-        "message": f"Assistant created. Forward your calls to {twilio_number}.",
-        "twilio_number": twilio_number
-    }, 201
+    # 4) Optional: immediately index any uploaded files via RAG
+    indexed = 0
+    if "files" in request.files:
+        docs = []
+        for f in request.files.getlist("files"):
+            filename = secure_filename(f.filename or "")
+            ext = filename.rsplit(".", 1)[-1].lower()
+            data = f.read()
+            if ext == "pdf":
+                docs.append(data)
+            elif ext in ("txt", "md", "text"):
+                docs.append(data.decode("utf-8", errors="ignore"))
+        if docs:
+            result = extract_and_index(assistant.id, user.id, docs)
+            indexed = result.get("indexed", 0)
+
+    # 5) Return response
+    resp = {
+        "message":       f"Assistant created. Forward calls to {twilio_number}.",
+        "assistant_id":  assistant.id,
+        "twilio_number": twilio_number,
+        "indexed_chunks": indexed
+    }
+    return jsonify(resp), 201
+
 
 @assistant_bp.route("/slots/<int:assistant_id>", methods=["GET"])
 def get_available_slots(assistant_id):
-    from datetime import datetime
-    import json
-    
+    """
+    Query params:
+      - date (YYYY-MM-DD) optional, defaults to today
+    """
     assistant = Assistant.query.get_or_404(assistant_id)
-    
-    # Get query parameters
-    date_str = request.args.get('date')
-    
-    # If no date provided, use today
-    if not date_str:
-        date_str = datetime.now().strftime("%Y-%m-%d")
-    
+    date_str = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
     try:
         date = datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
-        return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
-        
-    # Get day of week
-    day_name = date.strftime("%A").lower()
-    
-    # Parse available days
-    available_days = {}
-    if assistant.available_days:
-        try:
-            available_days = json.loads(assistant.available_days)
-        except:
-            available_days = {
-                "monday": True, "tuesday": True, "wednesday": True, 
-                "thursday": True, "friday": True, 
-                "saturday": False, "sunday": False
-            }
-    
-    # Check if this day is available
-    if not available_days.get(day_name, False):
-        return {"slots": [], "message": f"No slots available on {day_name.capitalize()}"}, 200
-    
-    # Generate time slots for this day
-    from app.services.booking import generate_time_slots, load_booked_slots
+        return jsonify(error="Invalid date format, use YYYY-MM-DD"), 400
+
+    day = date.strftime("%A").lower()
+    try:
+        available_days = json.loads(assistant.available_days)
+    except:
+        available_days = {
+            "monday": True, "tuesday": True, "wednesday": True,
+            "thursday": True, "friday": True,
+            "saturday": False, "sunday": False
+        }
+
+    if not available_days.get(day, False):
+        return jsonify(date=date_str, day=day, slots=[], message=f"No slots on {day.capitalize()}"), 200
+
     slots = generate_time_slots(
-        assistant.start_time, 
-        assistant.end_time, 
+        assistant.start_time,
+        assistant.end_time,
         assistant.booking_duration_minutes,
         available_days,
         for_date=date.date()
     )
-    
-    # Load booked slots
-    booked_slots = load_booked_slots(assistant.id, date.date())
+    booked = load_booked_slots(assistant.id, date.date())
 
-    
-    # Filter out booked slots
-    available_slots = []
-    for slot in slots:
-        # Check if this slot is booked for this date
-        slot_key = f"{date_str}_{slot}"
-        if slot_key not in booked_slots or booked_slots[slot_key] is None:
-            available_slots.append(slot)
-    
-    return {
-        "date": date_str,
-        "day": day_name,
-        "slots": available_slots,
-        "business_hours": f"{assistant.start_time} - {assistant.end_time}",
-        "slot_duration": assistant.booking_duration_minutes
-    }, 200
+    free = [s for s in slots if f"{date_str}_{s}" not in booked or booked[f"{date_str}_{s}"] is None]
+    return jsonify(
+        date=date_str,
+        day=day,
+        slots=free,
+        business_hours=f"{assistant.start_time} - {assistant.end_time}",
+        slot_duration=assistant.booking_duration_minutes
+    ), 200
+
 
 @assistant_bp.route("/bookings/<int:assistant_id>", methods=["GET"])
 def get_assistant_bookings(assistant_id):
     """
-    Get all bookings for an assistant within a date range
-    Query parameters:
-    - start_date: Start date in YYYY-MM-DD format (default: today)
-    - end_date: End date in YYYY-MM-DD format (default: 7 days from start)
+    Query params:
+      - start_date (YYYY-MM-DD), default=today
+      - end_date   (YYYY-MM-DD), default=start+7d
     """
     assistant = Assistant.query.get_or_404(assistant_id)
-    
-    # Get query parameters
-    start_date_str = request.args.get('start_date')
-    end_date_str = request.args.get('end_date')
-    
-    # If no start date provided, use today
-    if not start_date_str:
-        start_date = datetime.now().date()
-    else:
-        try:
-            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-        except ValueError:
-            return {"error": "Invalid start_date format. Use YYYY-MM-DD"}, 400
-    
-    # If no end date provided, use 7 days from start date
-    if not end_date_str:
-        end_date = start_date + timedelta(days=7)
-    else:
-        try:
-            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-        except ValueError:
-            return {"error": "Invalid end_date format. Use YYYY-MM-DD"}, 400
-    
-    # Get all bookings for the assistant within the date range
-    bookings = Booking.query.filter_by(assistant_id=assistant_id).filter(
-        Booking.date >= start_date,
-        Booking.date <= end_date
-    ).all()
-    
-    # Format bookings for response
-    formatted_bookings = []
-    for booking in bookings:
-        formatted_bookings.append({
-            "id": booking.id,
-            "date": booking.date.strftime("%Y-%m-%d"),
-            "time": booking.time.strftime("%H:%M"),
-            "customer_name": booking.customer_name,
-            "details": booking.details,
-            "created_at": booking.created_at.strftime("%Y-%m-%d %H:%M:%S")
-        })
-    
-    # Generate all available slots for each day in the range
+
+    # parse date range
+    sd = request.args.get("start_date")
+    ed = request.args.get("end_date")
+    try:
+        start = datetime.strptime(sd, "%Y-%m-%d").date() if sd else datetime.now().date()
+        end   = datetime.strptime(ed, "%Y-%m-%d").date() if ed else start + timedelta(days=7)
+    except ValueError:
+        return jsonify(error="Invalid date format, use YYYY-MM-DD"), 400
+
+    # fetch bookings
+    rows = Booking.query.filter_by(assistant_id=assistant_id) \
+        .filter(Booking.date >= start, Booking.date <= end) \
+        .order_by(Booking.date, Booking.time) \
+        .all()
+
+    bookings = [{
+        "id":            b.id,
+        "date":          b.date.strftime("%Y-%m-%d"),
+        "time":          b.time.strftime("%H:%M"),
+        "customer_name": b.customer_name,
+        "details":       b.details,
+        "created_at":    b.created_at.strftime("%Y-%m-%d %H:%M:%S")
+    } for b in rows]
+
+    # build slots per day
     all_slots = {}
-    current_date = start_date
-    while current_date <= end_date:
-        day_name = current_date.strftime("%A").lower()
-        
-        # Parse available days
+    current = start
+    try:
+        available_days = json.loads(assistant.available_days)
+    except:
         available_days = {}
-        if assistant.available_days:
+    while current <= end:
+        day = current.strftime("%A").lower()
+        if available_days.get(day, False):
+            day_slots = generate_time_slots(
+                assistant.start_time,
+                assistant.end_time,
+                assistant.booking_duration_minutes,
+                available_days,
+                for_date=current
+            )
+            booked_map = load_booked_slots(assistant.id, current)
+            formatted = []
+            for slot in day_slots:
+                t24 = datetime.strptime(slot, "%I:%M %p").strftime("%H:%M")
+                is_booked = f"{current.strftime('%Y-%m-%d')}_{slot}" in booked_map
+                formatted.append({"time": t24, "is_booked": is_booked})
+            all_slots[current.strftime("%Y-%m-%d")] = formatted
+        current += timedelta(days=1)
+
+    return jsonify(
+        bookings=bookings,
+        slots=all_slots,
+        business_hours=f"{assistant.start_time} - {assistant.end_time}",
+        slot_duration=assistant.booking_duration_minutes
+    ), 200
+
+
+@assistant_bp.route("/assistants", methods=["GET"])
+def list_assistants():
+    """
+    GET /api/assistants?user_id=123
+    or if you have session-based auth, omit the query-param and rely on session["user_id"].
+    """
+    # Try session first (if you have a login flow), otherwise fall back to ?user_id=
+    user_id = session.get("user_id") or request.args.get("user_id", type=int)
+    if not user_id:
+        return jsonify(error="Missing user_id"), 400
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify(error="No such user"), 404
+
+    assistants = Assistant.query.filter_by(user_id=user_id).all()
+
+    payload = []
+    for a in assistants:
+        payload.append({
+            "id": a.id,
+            "name": a.name,
+            "business_name": a.business_name,
+            "description": a.description,
+            "start_time": a.start_time,
+            "end_time": a.end_time,
+            "booking_duration_minutes": a.booking_duration_minutes,
+            "available_days": json.loads(a.available_days),
+            "twilio_number": a.twilio_number,
+            "voice_type": a.voice_type
+        })
+
+    return jsonify(assistants=payload), 200
+
+@assistant_bp.route("/assistant/<int:assistant_id>", methods=["PATCH"])
+def update_assistant(assistant_id):
+    """
+    Update fields on an existing Assistant.
+    Accepts JSON body with any of:
+      - business_name (str)
+      - receptionist_name (str)      → maps to Assistant.name
+      - description (str)
+      - start_time (HH:MM)
+      - end_time   (HH:MM)
+      - booking_duration_minutes (int)
+      - available_days (JSON object of day→bool)
+      - voice_type ("male" or "female")
+    (Note: twilio_number and user’s phone_number cannot be changed here.)
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    assistant = Assistant.query.get_or_404(assistant_id)
+
+    # Only allow these fields to be updated
+    updatable = {
+        "business_name":           lambda v: setattr(assistant, "business_name", v),
+        "receptionist_name":       lambda v: setattr(assistant, "name", v),
+        "description":             lambda v: setattr(assistant, "description", v),
+        "start_time":              lambda v: setattr(assistant, "start_time", v),
+        "end_time":                lambda v: setattr(assistant, "end_time", v),
+        "booking_duration_minutes":lambda v: setattr(assistant, "booking_duration_minutes", int(v)),
+        "voice_type":              lambda v: setattr(assistant, "voice_type", v),
+        "available_days":          lambda v: setattr(assistant, "available_days", json.dumps(v)),
+    }
+
+    changed = []
+    for field, setter in updatable.items():
+        if field in data:
             try:
-                available_days = json.loads(assistant.available_days)
-            except:
-                available_days = {
-                    "monday": True, "tuesday": True, "wednesday": True, 
-                    "thursday": True, "friday": True, 
-                    "saturday": False, "sunday": False
-                }
-        
-        # Skip if this day is not available
-        if not available_days.get(day_name, False):
-            current_date += timedelta(days=1)
-            continue
-        
-        # Generate time slots for this day
-        day_slots = generate_time_slots(
-            assistant.start_time, 
-            assistant.end_time, 
-            assistant.booking_duration_minutes,
-            available_days,
-            for_date=current_date
-        )
-        
-        # Load booked slots for this day
-        booked_slots = load_booked_slots(assistant.id, current_date)
-        
-        # Format slots with availability info
-        formatted_slots = []
-        for slot in day_slots:
-            # Convert 12-hour format to 24-hour format for consistency
-            time_obj = datetime.strptime(slot, "%I:%M %p")
-            time_24h = time_obj.strftime("%H:%M")
-            
-            # Check if slot is booked
-            is_booked = time_obj.time() in [booking.time for booking in booked_slots.values()] if booked_slots else False
-            
-            formatted_slots.append({
-                "time": time_24h,
-                "is_booked": is_booked
-            })
-            
-        all_slots[current_date.strftime("%Y-%m-%d")] = formatted_slots
-        current_date += timedelta(days=1)
-    
-    return jsonify({
-        "bookings": formatted_bookings,
-        "slots": all_slots,
-        "business_hours": f"{assistant.start_time} - {assistant.end_time}",
-        "slot_duration": assistant.booking_duration_minutes
-    })
+                setter(data[field])
+                changed.append(field)
+            except (ValueError, TypeError):
+                return jsonify(error=f"Invalid value for `{field}`"), 400
+
+    if not changed:
+        return jsonify(message="No updatable fields provided"), 400
+
+    db.session.commit()
+
+    # Return the updated assistant record
+    assistant_data = {
+        "id":                         assistant.id,
+        "name":                       assistant.name,
+        "business_name":              assistant.business_name,
+        "description":                assistant.description,
+        "start_time":                 assistant.start_time,
+        "end_time":                   assistant.end_time,
+        "booking_duration_minutes":   assistant.booking_duration_minutes,
+        "voice_type":                 assistant.voice_type,
+        "available_days":             json.loads(assistant.available_days),
+    }
+
+    return jsonify(
+        message="Assistant updated successfully",
+        updated_fields=changed,
+        assistant=assistant_data
+    ), 200

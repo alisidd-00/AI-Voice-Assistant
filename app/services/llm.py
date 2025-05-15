@@ -2,7 +2,7 @@ import os
 import requests
 from app.config import OPENROUTER_API_KEY, OPENROUTER_URL, MODEL_ID
 
-def query_openrouter(messages, model=MODEL_ID, temperature=0.7):
+def query_openrouter(messages, model='google/gemini-2.0-flash-001', temperature=0.7):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"

@@ -6,7 +6,7 @@ from pathlib import Path
 from openai import OpenAI
 
 # Your app’s public base URL (ngrok or production)
-APP_BASE = os.getenv("APP_BASE", "https://e405-182-191-134-223.ngrok-free.app")
+APP_BASE = os.getenv("TWILIO_WEBHOOK_BASE")
 OPENAI_KEY = os.getenv("OPENAI_KEY")
 _client = OpenAI(api_key=OPENAI_KEY)
 

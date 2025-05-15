@@ -19,12 +19,14 @@ def create_app():
     from .routes.voice_routes import voice_bp
     from .routes.auth_routes import auth_bp
     from .routes.tts_routes import tts_bp
+    from .routes.rag_routes import rag_bp
 
 
     app.register_blueprint(assistant_bp, url_prefix="/api")
     app.register_blueprint(voice_bp, url_prefix="/voice")
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(tts_bp)
+    app.register_blueprint(rag_bp) 
 
     with app.app_context():
         db.create_all()

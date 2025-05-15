@@ -28,6 +28,7 @@ def voice_entrypoint():
 
     save_memory_entry(convo.id, "assistant", greeting)
     audio_url = generate_openai_tts(greeting, assistant.voice_type)
+    print("🕪 Playing back via:", audio_url)
 
     resp = VoiceResponse()
     resp.play(audio_url)
