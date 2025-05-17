@@ -9,11 +9,7 @@ from app.services.booking import handle_booking
 from app.models import Assistant
 
 def process_input(user_text: str, assistant: Assistant, conversation_id: int):
-    # 1) Load per-assistant conversation history
-    # mem_key = str(assistant.id)
-    # history = load_memory(mem_key)
-    # print(f"History: {history}")
-
+ 
     history = load_memory(conversation_id)
 
     history_json = json.dumps(history, ensure_ascii=False)
@@ -59,10 +55,5 @@ def process_input(user_text: str, assistant: Assistant, conversation_id: int):
             customer_name=customer_name,
             details=details
         )
-
-    # # 6) Append this turn to history and save it
-    # history.append({"role": "user",      "content": user_text})
-    # history.append({"role": "assistant", "content": reply})
-    # save_memory(history, mem_key)
 
     return reply, booking_data

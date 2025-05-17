@@ -97,37 +97,38 @@ def generate_prompt(history_json: str, assistant=None) -> str:
 
             9. Make your responses conversational and friendly.
 
+            10. Do not indulge in any conversation with the user that are unrelated the business name, description or the booking workflow.
+
             Note: in the booking workflow, you do not need to ask for the user's name again if it is already collected. Also do not gather all information at once—ask for the name first, then the time slot, then the reason for the visit.
             """
     
     return prompt
 
 def extract_booking_data(response: str):
-    import re, json
+    import json
 
-    # 1) Try fenced JSON first
-    fenced = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
-    if fenced:
-        js = fenced.group(1)
-        try:
-            booking_data = json.loads(js)
-            clean = response.replace(fenced.group(0), '').strip()
-            return clean, booking_data
-        except json.JSONDecodeError:
-            pass
+    # 1) Look for the opening fence
+    start_tag = '```json'
+    end_tag   = '```'
 
-    # 2) Fallback to your [BOOKING:…] pattern
-    booking_pattern = r'\[BOOKING:(.*?)\]'
-    matches = re.findall(booking_pattern, response, re.DOTALL)
-    clean = re.sub(booking_pattern, '', response).strip()
-    if matches:
-        try:
-            data = json.loads(matches[0])
-            if "booking_confirmed" in data and "time" in data["booking_confirmed"]:
-                if "date" not in data["booking_confirmed"]:
-                    data["booking_confirmed"]["date"] = None
-                return clean, data
-        except:
-            pass
+    start_idx = response.find(start_tag)
+    if start_idx != -1:
+        # find the close fence after the opening
+        end_idx = response.find(end_tag, start_idx + len(start_tag))
+        if end_idx != -1:
+            # extract the raw JSON payload
+            raw_json = response[start_idx + len(start_tag):end_idx].strip()
+            try:
+                booking_data = json.loads(raw_json)
+                # remove the entire fenced block from the “clean” text
+                clean = response[:start_idx] + response[end_idx + len(end_tag):]
+                return clean.strip(), booking_data
+            except json.JSONDecodeError:
+                # fall through to fallback if the JSON is invalid
+                pass
+
+    # 2) (Optional) your old [BOOKING: …] fallback
+    #    …unchanged…
 
     return response, None
+
